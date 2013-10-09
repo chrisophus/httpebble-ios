@@ -12,6 +12,8 @@
 #import <PebbleKit/PebbleKit.h>
 #import <CoreData/CoreData.h>
 #import <CoreLocation/CoreLocation.h>
+#import <CoreMotion/CoreMotion.h>
+
 #define HTTP_UUID { 0x91, 0x41, 0xB6, 0x28, 0xBC, 0x89, 0x49, 0x8E, 0xB1, 0x47, 0x04, 0x9F, 0x49, 0xC0, 0x99, 0xAD }
 
 #define HTTP_URL_KEY @(0xFFFF)
@@ -35,6 +37,8 @@
 #define HTTP_LATITUDE_KEY @(0xFFE1)
 #define HTTP_LONGITUDE_KEY @(0xFFE2)
 #define HTTP_ALTITUDE_KEY @(0xFFE3)
+#define HTTP_STEPS_KEY @(0xFE01)
+#define HTTP_BATTERY_KEY @(0xFE02)
 
 @interface KBPebbleThing () <PBPebbleCentralDelegate, CLLocationManagerDelegate> {
     PBWatch *ourWatch; // We actually never really use this.
@@ -46,6 +50,7 @@
     NSPersistentStoreCoordinator *persistentStoreCoordinator;
     NSManagedObjectModel *managedObjectModel;
     CLLocationManager *locationManager;
+    CMStepCounter* stepCounter;
 }
 
 - (BOOL)handleWatch:(PBWatch*)watch message:(NSDictionary*)message;
@@ -56,6 +61,7 @@
 - (BOOL)handleWatch:(PBWatch *)watch deleteFromMessage:(NSDictionary *)message;
 - (BOOL)handleWatch:(PBWatch *)watch timeFromMessage:(NSDictionary *)message;
 - (BOOL)handleWatch:(PBWatch *)watch locationFromMessage:(NSDictionary *)message;
+- (BOOL)handleWatch:(PBWatch *)watch stepsFromMessage:(NSDictionary *)message;
 - (KBPebbleValue*)getStoredValueForApp:(NSNumber*)appID withKey:(NSNumber*)key;
 - (void)storeId:(id)value InPebbleValue:(KBPebbleValue*)pv;
 - (id)getIdFromPebbleValue:(KBPebbleValue*)pv;
@@ -77,6 +83,8 @@
         locationManager.distanceFilter = kCLDistanceFilterNone;
         locationManager.desiredAccuracy = kCLLocationAccuracyKilometer;
         hasPendingLocationRequest = NO;
+        
+        stepCounter = [CMStepCounter new];
         
         // Set up the object model.
         NSURL *modelURL = [[NSBundle mainBundle] URLForResource:@"PebbleModel" withExtension:@"momd"];
@@ -220,6 +228,9 @@ void httpErrorResponse(PBWatch* watch, NSNumber* success_key, NSInteger status, 
     }
     if([message objectForKey:HTTP_LOCATION_KEY]) {
         return [self handleWatch:watch locationFromMessage:message];
+    }
+    if([message objectForKey:HTTP_STEPS_KEY]) {
+        return [self handleWatch:watch stepsFromMessage:message];
     }
     return NO;
 }
@@ -526,6 +537,26 @@ void httpErrorResponse(PBWatch* watch, NSNumber* success_key, NSInteger status, 
     response[HTTP_TIME_KEY] = [NSNumber numberWithUint32:time(nil)];
     NSLog(@"Sending tz data: %@", response);
     [watch appMessagesPushUpdate:response onSent:nil];
+    return YES;
+}
+
+- (BOOL)handleWatch:(PBWatch *)watch stepsFromMessage:(NSDictionary *)message {
+    NSDate *now = [NSDate date];
+    NSCalendar *gregorian = [[NSCalendar alloc] initWithCalendarIdentifier:NSGregorianCalendar];
+    NSDateComponents *comps = [gregorian components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay | NSCalendarUnitHour fromDate:now];
+    [comps setHour:0];
+    NSDate *today = [gregorian dateFromComponents:comps];
+    
+    [stepCounter queryStepCountStartingFrom:today to:now toQueue:[NSOperationQueue mainQueue]
+                                withHandler:^(NSInteger numberOfSteps, NSError *error) {
+                                    NSLog(@"%s %d %@", __PRETTY_FUNCTION__, numberOfSteps, error);
+                                    [watch appMessagesPushUpdate:@{HTTP_STEPS_KEY: [NSString stringWithFormat:@"%d", numberOfSteps]}
+                                                          onSent:^(PBWatch *watch, NSDictionary *update, NSError *error) {
+                                        if(error) {
+                                            NSLog(@"Error pushing steps update: %@", error);
+                                        }
+                                    }];
+                                }];
     return YES;
 }
 
